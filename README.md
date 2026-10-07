@@ -183,3 +183,11 @@ nonosolve links two SAT solvers by Armin Biere and colleagues:
   *CaDiCaL, Gimsatul, IsaSAT and Kissat Entering the SAT Competition 2024.*
   In Proc. SAT Competition 2024: Solver, Benchmark and Proof Checker Descriptions,
   Department of Computer Science Report Series B, vol. B-2024-1, pp. 8–10, University of Helsinki, 2024.
+
+## License
+
+The code is released under the [MIT License](LICENSE).  The puzzle files keep
+their own terms:
+* `puzzles/tournament` is under GPL-3.0;
+* the puzzles in `puzzles/survey` may be redistributed only with the
+  attribution listed in `puzzles/survey/README.md`.
