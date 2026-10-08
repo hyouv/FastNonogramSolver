@@ -22,15 +22,18 @@ def fmt_path(nin, ext):
     return os.path.join(FMT, os.path.splitext(os.path.basename(nin))[0] + ext)
 
 
+OURS = os.environ.get('NONOSOLVE') or os.path.join(ROOT, 'bin', 'nonosolve')
+
+
 def command(solver, nin, timeout):
     """Return (argv, stdin_path) or None if the solver cannot handle the puzzle."""
     w, h = dims(nin)
     if solver == 'ours':
-        return [os.path.join(ROOT, 'bin', 'nonosolve'), '-q', '--timeout', str(timeout), nin], None
+        return [OURS, '-q', '--timeout', str(timeout), nin], None
     if solver.startswith('ours:'):  # ours with extra flags, e.g. "ours:--enc 1 --seed 2"
-        return [os.path.join(ROOT, 'bin', 'nonosolve'), '-q', '--timeout', str(timeout)] + solver[5:].split() + [nin], None
+        return [OURS, '-q', '--timeout', str(timeout)] + solver[5:].split() + [nin], None
     if solver == 'ours_nosat':
-        return [os.path.join(ROOT, 'bin', 'nonosolve'), '-q', '--sat', 'none', '--timeout', str(timeout), nin], None
+        return [OURS, '-q', '--sat', 'none', '--timeout', str(timeout), nin], None
     if solver == 'pbnsolve':
         return [os.path.join(SS, 'pbnsolve', 'pbnsolve-1.09', 'pbnsolve'), '-u', nin], None
     if solver == 'naughty':

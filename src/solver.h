@@ -11,7 +11,7 @@ struct Options {
     int maxSolutions = 2;
     bool maxSolutionsSet = false;
     double timeout = 1e9;
-    std::string sat = "kissat";
+    std::string sat = "auto";  // auto: hybrid for a single solution, kissat otherwise
     long dfsNodes = 100000;
     double dfsWork = 40e6;  // DFS budget in probes x lines before switching to CDCL
     bool verbose = false;
@@ -25,6 +25,10 @@ struct Options {
     int seed = 0;
     int cadicalConflicts = 20000;
     std::string kissatConfig;
+    int satPhase = 2;  // phase hints: 0 none, 1 per-line counts, 2 belief propagation
+    bool satStarts = true, satDfsPhase = false;
+    int bpIters = 20;
+    std::vector<std::pair<std::string, int>> kissatOpts;
     bool interleave = false;
     bool probeClauses = true;
     double probeClauseLits = 2e7;  // single-solution mode: alternate DFS and CaDiCaL
@@ -85,6 +89,11 @@ Result solveT(const Puzzle& p, const Options& opt) {
     g_seed = opt.seed;
     g_cadicalConflicts = opt.cadicalConflicts;
     g_kissatConfig = opt.kissatConfig;
+    g_satPhase = opt.satPhase;
+    g_satStarts = opt.satStarts;
+    g_kissatOpts = opt.kissatOpts;
+    g_hintKnown.clear();
+    g_bpIters = opt.bpIters;
     double deadline = now_sec() + opt.timeout;
     int cacheBits = p.H * p.W <= 1024 ? 18 : 20;
     if (NW >= 3) cacheBits = 19;
@@ -141,6 +150,7 @@ Result solveT(const Puzzle& p, const Options& opt) {
     bool useSat = opt.sat != "none";
     E.nodeLimit = useSat ? opt.dfsNodes : opt.nodeLimit;
     E.probeLimit = useSat ? (long)(opt.dfsWork / (p.H + p.W)) : -1;
+    E.trackBest = useSat && opt.satDfsPhase;
     Status ds;
     auto luby = [](long i) {  // 1 1 2 1 1 2 4 ...
         long size = 1, seq = 0;
@@ -235,12 +245,19 @@ Result solveT(const Puzzle& p, const Options& opt) {
     res.usedSat = true;
     std::vector<std::vector<uint8_t>> found = E.solutions;
     std::vector<int> extra;
+    if (E.trackBest && E.best.known > root.known) {
+        g_hintKnown.assign(p.H * p.W, -1);
+        for (int r = 0; r < p.H; r++)
+            for (int c = 0; c < p.W; c++) g_hintKnown[r * p.W + c] = (int8_t)E.cellState(E.best, r, c);
+    }
     if (opt.probeClauses) {
         double ti = now_sec();
         E.implications(root, extra, (size_t)opt.probeClauseLits);
         if (opt.verbose) fprintf(stderr, "[sat] probe clauses: %zu literals (%.3fs)\n", extra.size(), now_sec() - ti);
     }
-    SatResult sr = satSearch(p, known, found, opt.maxSolutions, deadline, opt.verbose, opt.sat,
+    std::string backend = opt.sat;
+    if (backend == "auto") backend = opt.maxSolutions == 1 ? "hybrid" : "kissat";
+    SatResult sr = satSearch(p, known, found, opt.maxSolutions, deadline, opt.verbose, backend,
                              opt.probeClauses ? &extra : nullptr);
     E.solutions = found;
     E.st.nodes = E.st.nodes;  // keep counters

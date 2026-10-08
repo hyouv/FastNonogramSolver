@@ -9,17 +9,18 @@ On one server, single-threaded, against the best public solvers:
   44 in all, find up to two solutions):
   * nonosolve solves 43 within 600 s; the best competitor solves 39.
   * Knotty, Meow and Faase, which no solver in Wolter's survey finished, take
-    282–453 s.  None of the six competitors solves them within 600 s.
-  * webpbn #25820 is proved unique in 653 s.  The nonogrid project reports
+    7.5 s, 137 s and 10 s.  None of the six competitors solves them within
+    600 s.
+  * webpbn #25820 is proved unique in 721 s.  The nonogrid project reports
     about 29.6 hours for it.
 * **TAAI/TCGA/ICGA tournament sets** (30 × 1000 puzzles):
-  * nonosolve solves every set in 82–140 s.
-  * LalaFrogKK, the open-source tournament champion, needs 12.8× as much time
-    in total on the 28 sets it finishes (3.8–33.6× per set).
+  * nonosolve solves every set in 64–109 s.
+  * LalaFrogKK, the open-source tournament champion, needs 16.9× as much time
+    in total on the 28 sets it finishes (5.5–45.2× per set).
   * LalaFrogKK hits the 2-hour limit on the other two sets (icga2017 and
     tcga2016).
 * **5000 random 30x30 puzzles**: all solved with a uniqueness check, the
-  slowest in 3.1 s.
+  slowest in 2.8 s.
 
 It is not fastest everywhere.  On some easy and medium puzzles, mostly ones
 with several solutions, the best competitor is faster, by up to 24×.  None of
@@ -57,8 +58,18 @@ these takes nonosolve more than 2.1 s.  Full tables and raw numbers are in
    budget, the probed state is encoded to CNF:
    * the encoding uses order variables ("block j starts at or before p") and
      cover variables;
-   * binary clauses learned while probing are added;
-   * Kissat finds the first solution;
+   * binary clauses learned while probing are added, and so are clauses that
+     rule out every block start that no completion of its line allows (unit
+     propagation on the encoding cannot derive these);
+   * **phase hints from belief propagation**: rows and columns exchange
+     per-cell probabilities for a few rounds.  Each line computes its message
+     exactly, by forward-backward counting of its completions weighted by the
+     crossing lines' messages.  The result gives a likely value for every cell
+     and every order and cover variable;
+   * for a single solution, CaDiCaL searches with the hints as forced decision
+     phases;
+   * for the uniqueness check, Kissat finds the first solution, with the hints
+     as initial phases (Kissat has no phase API, so variables are renamed);
    * a quick 2x2-swap neighbourhood check often gives a second solution at no
      cost;
    * otherwise CaDiCaL, guided by the first solution, looks for nearby
@@ -85,8 +96,9 @@ bin/nonosolve -n 1 puzzle.cwd            # any solution
 bin/nonosolve --taai set.txt -o sol.txt --log log.txt   # TAAI/TCGA/ICGA tournament batch format
 ```
 Formats: `.nin`, `.cwd`, `.non` (Simpson), and the TAAI batch format.  Useful
-options are `--timeout S`, `--sat none|kissat|cadical`, `--enc 0|1|2` and
-`--dfs-work W`.
+options are `--timeout S`, `--sat none|auto|kissat|cadical|hybrid`, `--enc 0|1|2`,
+`--dfs-work W`, and `--no-sat-phase` / `--no-sat-starts` to switch off the
+phase hints and the block-start clauses.
 
 ## Repository layout
 

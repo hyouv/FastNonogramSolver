@@ -9,6 +9,7 @@
 // block positions as well as cells.
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,6 +20,11 @@ struct CNF {
     int nvars = 0;
     std::vector<int> lits;  // clauses separated by 0
     long nclauses = 0;
+    std::vector<int8_t> phase;  // per variable: 1 / -1 preferred value, 0 none
+    inline void setPhase(int v, bool b) {
+        if ((int)phase.size() <= v) phase.resize(v + 1, 0);
+        phase[v] = b ? 1 : -1;
+    }
     inline int newVar() { return ++nvars; }
     inline void add(std::initializer_list<int> c) {
         for (int x : c) lits.push_back(x);
@@ -40,13 +46,67 @@ inline int g_encoding = 2;
 inline int g_seed = 0;
 inline std::string g_kissatConfig;  // e.g. "sat", "unsat"; empty = default
 inline int g_cadicalConflicts = 20000;  // budget for solution-guided CaDiCaL before Kissat
+inline int g_satPhase = 0;  // initial phases: 1 per-line solution counts, 2 refined by belief propagation
+inline int g_bpIters = 20;
+inline std::vector<int8_t> g_hintKnown;  // if set: phases from this (deeper) partial assignment
+inline bool g_satStarts = false;  // clauses excluding block starts that no completion uses
+inline std::vector<std::pair<std::string, int>> g_kissatOpts;
 
-static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known, const int* xv);
+// Forward-backward count of the completions of a line consistent with known
+// cells.  Ps[j][p] is the fraction of completions in which block j starts at
+// p.  With wb, completions are weighted by an independent prior wb[i] for
+// "cell i is black".  Returns false if there is no completion or on overflow.
+static bool lineMarginals(int n, const int* c, int k, const int* known,
+                          std::vector<std::vector<long double>>& Ps, const double* wb = nullptr) {
+    auto wW = [&](int i) -> long double { return wb && i < n ? 1 - wb[i] : 1; };
+    auto wBlk = [&](int j, int i) -> long double {
+        if (!wb) return 1;
+        long double w = wW(i + c[j]);
+        for (int t = 0; t < c[j]; t++) w *= wb[i + t];
+        return w;
+    };
+    // cell n is a virtual white cell
+    auto canW = [&](int i) { return i >= n || known[i] != 1; };
+    std::vector<int> wpre(n + 2, 0);
+    for (int i = 0; i <= n; i++) wpre[i + 1] = wpre[i] + (i < n && known[i] == 0);
+    auto fits = [&](int j, int i) {
+        int e = i + c[j];
+        return e <= n && wpre[e] == wpre[i] && canW(e);
+    };
+    std::vector<std::vector<long double>> f(k + 1, std::vector<long double>(n + 2, 0)), b = f;
+    f[0][0] = 1;
+    for (int i = 0; i <= n; i++)
+        for (int j = 0; j <= k; j++) {
+            long double v = f[j][i];
+            if (v == 0) continue;
+            if (canW(i)) f[j][i + 1] += v * wW(i);
+            if (j < k && fits(j, i)) f[j + 1][i + c[j] + 1] += v * wBlk(j, i);
+        }
+    b[k][n + 1] = 1;
+    for (int i = n; i >= 0; i--)
+        for (int j = k; j >= 0; j--) {
+            long double v = canW(i) ? b[j][i + 1] * wW(i) : 0;
+            if (j < k && fits(j, i)) v += b[j + 1][i + c[j] + 1] * wBlk(j, i);
+            b[j][i] = v;
+        }
+    long double T = b[0][0];
+    if (!(T > 0) || !std::isfinite(T)) return false;
+    Ps.assign(k, std::vector<long double>(n + 1, 0));
+    for (int j = 0; j < k; j++)
+        for (int p = 0; p < n; p++)
+            if (f[j][p] > 0 && fits(j, p)) Ps[j][p] = f[j][p] * wBlk(j, p) * b[j + 1][p + c[j] + 1] / T;
+    return true;
+}
+
+static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known, const int* xv,
+                            double* pb, const double* wb, const int* hint);
 
 // known: -1 unknown, 0 white, 1 black for each cell of the line.
 // xv: variable of each cell.  Returns false if the line is infeasible.
-static bool encodeLine(CNF& F, int n, const int* c, int k, const int* known, const int* xv) {
-    if (g_encoding == 2) return encodeLineOrder(F, n, c, k, known, xv);
+// pb (encoding 2, optional): receives each cell's fraction of black completions.
+static bool encodeLine(CNF& F, int n, const int* c, int k, const int* known, const int* xv,
+                       double* pb = nullptr, const double* wb = nullptr, const int* hint = nullptr) {
+    if (g_encoding == 2) return encodeLineOrder(F, n, c, k, known, xv, pb, wb, hint);
     auto cellOK = [&](int i, int v) { return known[i] < 0 || known[i] == v; };
     // prefix count of white-known cells for O(1) "block fits" test
     std::vector<int> wpre(n + 1, 0);
@@ -238,7 +298,9 @@ static bool encodeLine(CNF& F, int n, const int* c, int k, const int* known, con
 
 // Block-position encoding: order variables y[j][p] (start_j <= p) and cover
 // variables v[j][i] (block j covers cell i);  x_i <-> OR_j v[j][i].
-static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known, const int* xv) {
+// hint (optional): a deeper partial assignment of the line, used for phases only.
+static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known, const int* xv,
+                            double* pb, const double* wb, const int* hint) {
     auto add = [&](std::vector<int> cl) {
         std::vector<int> out;
         for (int x : cl) {
@@ -250,6 +312,8 @@ static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known
     };
     if (k == 0) {
         for (int i = 0; i < n; i++) add({-xv[i]});
+        if (pb)
+            for (int i = 0; i < n; i++) pb[i] = 0;
         return true;
     }
     // earliest / latest starts from the clue alone, then tightened by a pass
@@ -283,6 +347,32 @@ static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known
         for (int p = lo[j]; p < hi[j]; p++) add({neg(ylit(j, p)), ylit(j, p + 1)});
     for (int j = 0; j + 1 < k; j++)
         for (int p = lo[j + 1]; p <= hi[j + 1]; p++) add({neg(ylit(j + 1, p)), ylit(j, p - c[j] - 1)});
+    std::vector<std::vector<long double>> Pk, Ps;
+    if (g_satStarts && !lineMarginals(n, c, k, known, Pk)) Pk.clear();
+    bool marg = (g_satPhase || pb) && lineMarginals(n, c, k, hint ? hint : known, Ps, wb);
+    if (pb)
+        for (int i = 0; i < n; i++) pb[i] = -1;
+    if (!Pk.empty())
+        for (int j = 0; j < k; j++)
+            for (int p = lo[j]; p <= hi[j]; p++)
+                // no completion starts block j at p: !(start <= p & !(start <= p-1))
+                if (Pk[j][p] == 0) add({neg(ylit(j, p)), ylit(j, p - 1)});
+    if (marg) {
+        for (int j = 0; j < k; j++) {
+            long double cum = 0;
+            for (int p = lo[j]; p < hi[j]; p++) {
+                cum += Ps[j][p];
+                F.setPhase(Y[j][p], cum >= 0.5);
+            }
+        }
+        if (pb)
+            for (int i = 0; i < n; i++) {
+                long double s = 0;
+                for (int j = 0; j < k; j++)
+                    for (int p = std::max(0, i - c[j] + 1); p <= i; p++) s += Ps[j][p];
+                pb[i] = (double)s;
+            }
+    }
     // cover variables
     std::vector<std::vector<int>> cov(n);
     for (int j = 0; j < k; j++) {
@@ -295,6 +385,11 @@ static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known
             add({v, neg(a), neg(b)});
             add({-v, xv[i]});
             cov[i].push_back(v);
+            if (marg) {
+                long double s = 0;
+                for (int p = std::max(0, i - c[j] + 1); p <= i; p++) s += Ps[j][p];
+                F.setPhase(v, s >= 0.5);
+            }
         }
     }
     for (int i = 0; i < n; i++) {
@@ -311,25 +406,101 @@ static bool encodeLineOrder(CNF& F, int n, const int* c, int k, const int* known
 static bool encodePuzzle(const Puzzle& p, const std::vector<int8_t>& known, CNF& F) {
     F = CNF();
     F.nvars = p.H * p.W;
-    std::vector<int> kn, xv;
+    std::vector<int> kn, xv, hl;
+    const bool want = g_satPhase && g_encoding == 2;
+    // phases come from the hint assignment when there is one; clauses only from known
+    const std::vector<int8_t>& hk = (want && (int)g_hintKnown.size() == p.H * p.W) ? g_hintKnown : known;
+    std::vector<double> pr(want ? p.H * p.W : 0), pc(pr.size()), lb;
+    // Belief propagation: mr / mc are the row / column messages to each cell.
+    const int N = p.H * p.W;
+    std::vector<double> mr, mc, wl;
+    const bool bp = want && g_satPhase >= 2;
+    if (bp) {
+        mr.assign(N, 0.5);
+        mc.assign(N, 0.5);
+        std::vector<std::vector<long double>> Ps;
+        std::vector<int> kl;
+        auto pass = [&](bool rows) {
+            int L = rows ? p.H : p.W, n = rows ? p.W : p.H;
+            for (int l = 0; l < L; l++) {
+                kl.assign(n, -1);
+                wl.assign(n, 0.5);
+                auto idx = [&](int i) { return rows ? l * p.W + i : i * p.W + l; };
+                for (int i = 0; i < n; i++) {
+                    kl[i] = hk[idx(i)];
+                    wl[i] = rows ? mc[idx(i)] : mr[idx(i)];
+                }
+                const auto& cl = rows ? p.rows[l] : p.cols[l];
+                int k = (int)cl.size();
+                if (!k || !lineMarginals(n, cl.data(), k, kl.data(), Ps, wl.data())) continue;
+                for (int i = 0; i < n; i++) {
+                    long double s = 0;
+                    for (int j = 0; j < k; j++)
+                        for (int q = std::max(0, i - cl[j] + 1); q <= i; q++) s += Ps[j][q];
+                    double post = std::min(1.0 - 1e-9, std::max(1e-9, (double)s));
+                    double pri = wl[i];
+                    // extrinsic message: divide the prior odds out of the posterior
+                    double y = post * (1 - pri), z = (1 - post) * pri;
+                    double m = std::min(1.0 - 1e-6, std::max(1e-6, y / (y + z)));
+                    double& out = rows ? mr[idx(i)] : mc[idx(i)];
+                    out = 0.5 * out + 0.5 * m;
+                }
+            }
+        };
+        for (int it = 0; it < g_bpIters; it++) {
+            pass(true);
+            pass(false);
+        }
+    }
     for (int r = 0; r < p.H; r++) {
         kn.assign(p.W, -1);
+        hl.clear();
         xv.assign(p.W, 0);
         for (int c = 0; c < p.W; c++) {
             kn[c] = known[r * p.W + c];
+            if (&hk != &known) hl.push_back(hk[r * p.W + c]);
             xv[c] = r * p.W + c + 1;
         }
-        if (!encodeLine(F, p.W, p.rows[r].data(), (int)p.rows[r].size(), kn.data(), xv.data())) return false;
+        lb.assign(p.W, -1);
+        if (bp) wl.assign(mc.begin() + r * p.W, mc.begin() + (r + 1) * p.W);
+        if (!encodeLine(F, p.W, p.rows[r].data(), (int)p.rows[r].size(), kn.data(), xv.data(),
+                        want ? lb.data() : nullptr, bp ? wl.data() : nullptr, hl.empty() ? nullptr : hl.data()))
+            return false;
+        if (want)
+            for (int c = 0; c < p.W; c++) pr[r * p.W + c] = lb[c];
     }
     for (int c = 0; c < p.W; c++) {
         kn.assign(p.H, -1);
+        hl.clear();
         xv.assign(p.H, 0);
         for (int r = 0; r < p.H; r++) {
             kn[r] = known[r * p.W + c];
+            if (&hk != &known) hl.push_back(hk[r * p.W + c]);
             xv[r] = r * p.W + c + 1;
         }
-        if (!encodeLine(F, p.H, p.cols[c].data(), (int)p.cols[c].size(), kn.data(), xv.data())) return false;
+        lb.assign(p.H, -1);
+        if (bp) {
+            wl.resize(p.H);
+            for (int r = 0; r < p.H; r++) wl[r] = mr[r * p.W + c];
+        }
+        if (!encodeLine(F, p.H, p.cols[c].data(), (int)p.cols[c].size(), kn.data(), xv.data(),
+                        want ? lb.data() : nullptr, bp ? wl.data() : nullptr, hl.empty() ? nullptr : hl.data()))
+            return false;
+        if (want)
+            for (int r = 0; r < p.H; r++) pc[r * p.W + c] = lb[r];
     }
+    if (want)
+        for (int i = 0; i < p.H * p.W; i++) {
+            // combine the row and column estimates as independent evidence
+            double a = bp ? mr[i] : pr[i], b = bp ? mc[i] : pc[i];
+            if (hk[i] >= 0) F.setPhase(i + 1, hk[i]);
+            else if (a < 0 || b < 0) F.setPhase(i + 1, std::max(a, b) >= 0.5);
+            else {
+                double y = a * b, z = (1 - a) * (1 - b);
+                F.setPhase(i + 1, y + z > 0 ? y >= z : a >= 0.5);
+            }
+        }
+    F.phase.resize(F.nvars + 1, 0);
     for (int i = 0; i < p.H * p.W; i++)
         if (known[i] >= 0) F.add({known[i] ? i + 1 : -(i + 1)});
     return true;

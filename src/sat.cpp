@@ -29,6 +29,13 @@ int kissatTerminate(void* state) {
     return now_sec() > *(double*)state;
 }
 
+void kissatConfigure(kissat* K) {
+    if (!g_kissatConfig.empty()) kissat_set_configuration(K, g_kissatConfig.c_str());
+    kissat_set_option(K, "quiet", 1);
+    if (g_seed) kissat_set_option(K, "seed", g_seed);
+    for (auto& o : g_kissatOpts) kissat_set_option(K, o.first.c_str(), o.second);
+}
+
 // Look for a second solution that differs from g by a single 2x2 swap.
 bool swapNeighbour(const Puzzle& p, const std::vector<uint8_t>& g, std::vector<uint8_t>& out) {
     const int H = p.H, W = p.W;
@@ -108,6 +115,10 @@ SatResult satSearch(const Puzzle& p, const std::vector<int8_t>& known,
         }
     }
     const int N = p.H * p.W;
+    // Kissat has no phase API but starts every variable at "true": rename
+    // variables whose preferred value is false.
+    F.phase.resize(F.nvars + 1, 0);
+    auto R = [&](int x) { return g_satPhase && x && F.phase[std::abs(x)] < 0 ? -x : x; };
     if (verbose)
         fprintf(stderr, "[sat] vars=%d clauses=%ld encode=%.3fs\n", F.nvars, F.nclauses, now_sec() - t0);
     auto blockingClause = [&](const std::vector<uint8_t>& g, std::vector<int>& cl) {
@@ -117,19 +128,21 @@ SatResult satSearch(const Puzzle& p, const std::vector<int8_t>& known,
     };
     std::vector<int> cl;
 
+    // backends: "kissat" (Kissat first, CaDiCaL then Kissat for more),
+    // "cadical" (incremental CaDiCaL only), "hybrid" (CaDiCaL first, whose
+    // forced phases follow the hints, then as "kissat").
+    const bool kissatProof = backend == "kissat" || backend == "hybrid";
     if (found.empty() && backend == "kissat") {
         kissat* K = kissat_init();
-        if (!g_kissatConfig.empty()) kissat_set_configuration(K, g_kissatConfig.c_str());
-        kissat_set_option(K, "quiet", 1);
-        if (g_seed) kissat_set_option(K, "seed", g_seed);
+        kissatConfigure(K);
         kissat_reserve(K, F.nvars);
-        for (int x : F.lits) kissat_add(K, x);
+        for (int x : F.lits) kissat_add(K, R(x));
         double dl = deadline;
         kissat_set_terminate(K, &dl, kissatTerminate);
         int r = kissat_solve(K);
         if (r == 10) {
             std::vector<uint8_t> g(N);
-            for (int i = 0; i < N; i++) g[i] = kissat_value(K, i + 1) > 0;
+            for (int i = 0; i < N; i++) { int l = R(i + 1); g[i] = kissat_value(K, l) == l; }
             found.push_back(g);
             if (verbose) fprintf(stderr, "[sat] kissat solution 1 at %.3fs\n", now_sec() - t0);
         }
@@ -139,6 +152,7 @@ SatResult satSearch(const Puzzle& p, const std::vector<int8_t>& known,
     }
 
     CaDiCaL::Solver* S = nullptr;
+    bool hinted = false;  // S still forces the hint phases
     DeadlineTerminator term;
     term.deadline = deadline;
     while ((int)found.size() < want) {
@@ -172,27 +186,36 @@ SatResult satSearch(const Puzzle& p, const std::vector<int8_t>& known,
                 S->add(0);
             }
             S->connect_terminator(&term);
+            if (g_satPhase && found.empty()) {
+                for (int v = 1; v <= F.nvars; v++)
+                    if (F.phase[v]) S->phase(F.phase[v] > 0 ? v : -v);
+                hinted = true;
+            }
         }
         if (!found.empty()) {
+            // the hints led to the first solution; further search is guided by it
+            if (hinted)
+                for (int v = 1; v <= F.nvars; v++)
+                    if (F.phase[v]) S->unphase(v);
+            hinted = false;
             const auto& g = found.back();
             for (int i = 0; i < N; i++) S->phase(g[i] ? i + 1 : -(i + 1));
         }
         // Solution-guided CaDiCaL finds nearby solutions quickly; if it does
         // not within a conflict budget, Kissat is usually faster at proving
         // that no further solution exists.
-        bool hybrid = backend == "kissat" && !found.empty() && g_cadicalConflicts > 0;
+        bool hybrid = kissatProof && !found.empty() && g_cadicalConflicts > 0;
         if (hybrid) S->limit("conflicts", g_cadicalConflicts);
         int r = S->solve();
         if (r == 0 && hybrid && now_sec() < deadline) {
             if (verbose) fprintf(stderr, "[sat] cadical budget exhausted at %.3fs, switching to kissat\n", now_sec() - t0);
             kissat* K = kissat_init();
-            kissat_set_option(K, "quiet", 1);
-            if (g_seed) kissat_set_option(K, "seed", g_seed);
+            kissatConfigure(K);
             kissat_reserve(K, F.nvars);
-            for (int x : F.lits) kissat_add(K, x);
+            for (int x : F.lits) kissat_add(K, R(x));
             for (auto& g : found) {
                 blockingClause(g, cl);
-                for (int x : cl) kissat_add(K, x);
+                for (int x : cl) kissat_add(K, R(x));
                 kissat_add(K, 0);
             }
             double dl = deadline;
@@ -200,7 +223,7 @@ SatResult satSearch(const Puzzle& p, const std::vector<int8_t>& known,
             r = kissat_solve(K);
             if (r == 10) {
                 std::vector<uint8_t> g(N);
-                for (int i = 0; i < N; i++) g[i] = kissat_value(K, i + 1) > 0;
+                for (int i = 0; i < N; i++) { int l = R(i + 1); g[i] = kissat_value(K, l) == l; }
                 found.push_back(g);
                 if (verbose) fprintf(stderr, "[sat] kissat solution %zu at %.3fs\n", found.size(), now_sec() - t0);
                 blockingClause(g, cl);

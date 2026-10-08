@@ -17,7 +17,7 @@ static void usage() {
             "  --format F     nin|cwd|non|taai (default: by extension)\n"
             "  -n N           stop after N solutions (default 2 = uniqueness check)\n"
             "  --timeout S    give up after S seconds\n"
-            "  --sat MODE     none|kissat|cadical (default kissat)\n"
+            "  --sat MODE     none|auto|kissat|cadical|hybrid (default auto)\n"
             "  --dfs-nodes N  DFS node budget before switching to CDCL\n"
             "  -q             do not print the solution grid\n"
             "  -v             verbose statistics\n");
@@ -55,6 +55,19 @@ int main(int argc, char** argv) {
         else if (a == "--enc") opt.encoding = atoi(next().c_str());
         else if (a == "--seed") opt.seed = atoi(next().c_str());
         else if (a == "--kissat-config") opt.kissatConfig = next();
+        else if (a == "--sat-phase") opt.satPhase = 1;
+        else if (a == "--sat-bp") opt.satPhase = 2;
+        else if (a == "--sat-starts") opt.satStarts = true;
+        else if (a == "--no-sat-phase") opt.satPhase = 0;
+        else if (a == "--no-sat-starts") opt.satStarts = false;
+        else if (a == "--sat-dfs-phase") opt.satDfsPhase = true;
+        else if (a == "--bp-iters") opt.bpIters = atoi(next().c_str());
+        else if (a == "--kissat-opt") {
+            std::string o = next();
+            size_t eq = o.find('=');
+            if (eq == std::string::npos) opt.kissatOpts.push_back({o, 1});
+            else opt.kissatOpts.push_back({o.substr(0, eq), atoi(o.c_str() + eq + 1)});
+        }
         else if (a == "--interleave") opt.interleave = true;
         else if (a == "--probe-clauses") opt.probeClauses = true;
         else if (a == "--no-probe-clauses") opt.probeClauses = false;

@@ -520,6 +520,10 @@ struct Engine {
         }
     }
 
+    // Deepest probed DFS node so far (most known cells), a phase hint for CDCL.
+    bool trackBest = false;
+    State best;
+
     // Depth-first search with probing at every node.
     Status dfs(State& s, int depth) {
         st.nodes++;
@@ -538,6 +542,7 @@ struct Engine {
             recordSolution(s);
             return (int)solutions.size() >= maxSolutions ? S_SOLVED : S_CONFLICT;
         }
+        if (trackBest && s.known > best.known) best = s;
         int cell = chooseCell(s);
         int r = cell / W, c = cell % W;
         if ((int)saveInfo.size() <= depth) {

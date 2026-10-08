@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Turn the raw benchmark output (bench/results) into the CSV files and summary in results/.
 
-usage: export_results.py [raw-dir] [out-dir]
+usage: export_results.py [raw-dir] [out-dir] [ours-dir]
+
+ours-dir (default raw-dir) holds nonosolve's survey_ours.csv, rand30_ours.csv and
+tournament/ (or raw-dir/ours_final/) with one log per set.
 """
 import csv, glob, math, os, sys
 
 RAW = sys.argv[1] if len(sys.argv) > 1 else 'bench/results'
 OUT = sys.argv[2] if len(sys.argv) > 2 else 'results'
+OURS = sys.argv[3] if len(sys.argv) > 3 else RAW
+TOUR = os.path.join(OURS, 'tournament')
+if not os.path.isdir(TOUR):
+    TOUR = os.path.join(RAW, 'ours_final')
 
 SURVEY = [  # (file stem, name) in the order of Wolter's survey table
     ('webpbn-00001', 'Dancer'), ('webpbn-00006', 'Cat'), ('webpbn-00021', 'Skid'), ('webpbn-00027', 'Bucks'),
@@ -55,8 +62,8 @@ def fmt(t):
 
 def webpbn(md):
     rows = []
-    for f, solvers in (('survey_ours.csv', None), ('survey_competitors.csv', None)):
-        for r in csv.DictReader(open(os.path.join(RAW, f))):
+    for path in (os.path.join(OURS, 'survey_ours.csv'), os.path.join(RAW, 'survey_competitors.csv')):
+        for r in csv.DictReader(open(path)):
             lim = LIMIT.get(r['solver'], 600)
             o = outcome(r, lim)
             st = r['status'] if r['solver'] == 'ours' and o == 'solved' else ''
@@ -137,9 +144,9 @@ def tournament(md):
     sets = sorted(os.path.basename(f)[:-4] for f in glob.glob('puzzles/tournament/*.txt'))
     srows, prow = [], []
     for name in sets:
-        O = per_puzzle(os.path.join(RAW, 'ours_final', name + '.log'))
+        O = per_puzzle(os.path.join(TOUR, name + '.log'))
         L = per_puzzle(os.path.join(RAW, 'lala', name, 'log.txt'))
-        oc, lc = cpu_of(os.path.join(RAW, 'ours_final', name + '.time')), cpu_of(os.path.join(RAW, 'lala', name, 'time.txt'))
+        oc, lc = cpu_of(os.path.join(TOUR, name + '.time')), cpu_of(os.path.join(RAW, 'lala', name, 'time.txt'))
         lfin = 'total time' in open(os.path.join(RAW, 'lala', name, 'log.txt')).read()
         if lc is None:
             print('LalaFrogKK still running on', name)
@@ -171,13 +178,13 @@ def tournament(md):
     # per-puzzle view
     n = lf = big_o = big_l = 0
     for name in sets:
-        O = per_puzzle(os.path.join(RAW, 'ours_final', name + '.log'))
+        O = per_puzzle(os.path.join(TOUR, name + '.log'))
         L = per_puzzle(os.path.join(RAW, 'lala', name, 'log.txt'))
         for i in O:
             big_o += O[i] > 10
         for i in L:
             big_l += L[i] > 10
-    allo = sorted(t for name in sets for t in per_puzzle(os.path.join(RAW, 'ours_final', name + '.log')).values())
+    allo = sorted(t for name in sets for t in per_puzzle(os.path.join(TOUR, name + '.log')).values())
     md.append('\nnonosolve per puzzle: median %.3f s, 99th percentile %.2f s, slowest %.1f s. '
               'Puzzles over 10 s: nonosolve %d, LalaFrogKK %d.' % (allo[len(allo) // 2], allo[int(0.99 * len(allo))],
                                                                   allo[-1], big_o, big_l))
@@ -185,7 +192,7 @@ def tournament(md):
 
 def rand30(md):
     rows = []
-    for r in csv.DictReader(open(os.path.join(RAW, 'rand30_ours.csv'))):
+    for r in csv.DictReader(open(os.path.join(OURS, 'rand30_ours.csv'))):
         rows.append({'puzzle': stem(r['puzzle']), 'cpu_s': r['cpu'], 'wall_s': r['wall'],
                      'result': outcome(r, 120), 'uniqueness': r['status']})
     rows.sort(key=lambda r: r['puzzle'])
@@ -214,14 +221,24 @@ def rand30(md):
               % (len(rows), ts[-1], sum(ts), st.get('UNIQUE', 0), st.get('MULTIPLE', 0)))
 
 
+def over600():
+    """Describe nonosolve's webpbn puzzles that took more than 600 s."""
+    names = dict(SURVEY + HARD)
+    slow = [(names.get(stem(r['puzzle']), stem(r['puzzle'])), float(r['cpu']))
+            for r in csv.DictReader(open(os.path.join(OURS, 'survey_ours.csv'))) if float(r['cpu']) > 600]
+    if not slow:
+        return ', and no puzzle needed more than 600 s'
+    return ', and only %s needed more than 600 s' % ', '.join('%s (%.0f s)' % x for x in sorted(slow))
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     md = ['# Benchmark results', '',
           'All numbers were measured on one server (2x Intel Xeon Gold 5416S, Ubuntu 20.04, gcc 9.4), one process per '
           'physical core pinned with `taskset`, at most 8 jobs at a time.  Times are CPU seconds (user + system).', '',
           '* **webpbn puzzles**: find up to two solutions, i.e. solve and check uniqueness.  Competitors had 600 s; '
-          'nonosolve had 3600 s, and only #25820 (653 s) needed more than 600 s.  `n/a` = puzzle too large for the '
-          'solver, `err` = the solver rejected the input.',
+          'nonosolve had 3600 s%s.  `n/a` = puzzle too large for the '
+          'solver, `err` = the solver rejected the input.' % over600(),
           '* **Tournament sets** (TAAI/TCGA/ICGA, 1000 puzzles of 25x25 each): first solution of every puzzle, in '
           'order, with the tournament limit of 2 hours per set.',
           '* **Random 30x30 puzzles** (Wolter): solve and check uniqueness, 120 s limit.', '',
