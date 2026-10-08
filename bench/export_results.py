@@ -3,8 +3,8 @@
 
 usage: export_results.py [raw-dir] [out-dir] [ours-dir]
 
-ours-dir (default raw-dir) holds nonosolve's survey_ours.csv, rand30_ours.csv and
-tournament/ (or raw-dir/ours_final/) with one log per set.
+ours-dir (default raw-dir) holds nonosolve's survey_ours.csv, rand30_ours.csv,
+optionally hard_seeds.csv, and tournament/ (or raw-dir/ours_final/) with one log per set.
 """
 import csv, glob, math, os, sys
 
@@ -120,7 +120,37 @@ def webpbn(md):
         tot[c] = (n, t, na)
         md.append('| %s | %d%s | %s |' % (c, n, ' (%d too large)' % na if na else '',
                                           '%.0f' % t if not na else '-'))
+    seeds(md)
     return d
+
+
+def seeds(md):
+    """nonosolve's spread over random seeds on the hardest puzzles (ours-dir/hard_seeds.csv)."""
+    path = os.path.join(OURS, 'hard_seeds.csv')
+    if not os.path.exists(path):
+        return
+    t = {}
+    for r in csv.DictReader(open(path)):
+        t.setdefault(stem(r['puzzle']), {})[int(r['solver'].split('--seed')[1].split()[0])] = r
+    for r in csv.DictReader(open(os.path.join(OURS, 'survey_ours.csv'))):
+        if stem(r['puzzle']) in t:
+            t[stem(r['puzzle'])][0] = r
+    group = [(s, name) for s, name in SURVEY + HARD if s in t]
+    ns = sorted({k for s, _ in group for k in t[s]})
+    rows = [{'puzzle': s, 'seed': k, 'cpu_s': t[s][k]['cpu'], 'uniqueness': t[s][k]['status']}
+            for s, _ in group for k in ns]
+    with open(os.path.join(OUT, 'webpbn_seeds.csv'), 'w', newline='') as f:
+        w = csv.DictWriter(f, list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    md.append('\n### nonosolve with different random seeds\n')
+    md.append('The tables above show one run with the default seed 0.  On the hardest puzzles the run time depends '
+              'strongly on the seed (`--seed`), which changes the decision order of the SAT solvers.\n')
+    md.append('| puzzle | ' + ' | '.join('seed %d' % k for k in ns) + ' | median |')
+    md.append('|---|' + '---:|' * (len(ns) + 1))
+    for s, name in group:
+        ts = [float(t[s][k]['cpu']) for k in ns]
+        md.append('| %s | %s | %s |' % (name, ' | '.join(fmt(x) for x in ts), fmt(sorted(ts)[len(ts) // 2])))
 
 
 def per_puzzle(path):
@@ -242,7 +272,7 @@ def main():
           '* **Tournament sets** (TAAI/TCGA/ICGA, 1000 puzzles of 25x25 each): first solution of every puzzle, in '
           'order, with the tournament limit of 2 hours per set.',
           '* **Random 30x30 puzzles** (Wolter): solve and check uniqueness, 120 s limit.', '',
-          'Files: `webpbn.csv`, `tournament_sets.csv`, `tournament_puzzles.csv` (per-puzzle times), `rand30.csv`.', '',
+          'Files: `webpbn.csv`, `webpbn_seeds.csv`, `tournament_sets.csv`, `tournament_puzzles.csv` (per-puzzle times), `rand30.csv`.', '',
           '## webpbn puzzles']
     webpbn(md)
     md.append('\n## Tournament sets: nonosolve vs LalaFrogKK')

@@ -19,4 +19,9 @@ wait
 # 3. Wolter's 5000 random 30x30 puzzles (uniqueness check, 120 s limit)
 python3 bench/run_bench.py --solvers ours --timeout 120 --jobs 2 --cpus $A,$B --out $R/rand30_ours.csv \
   puzzles/rand30/*.nin > $R/rand30_ours.log 2>&1
+# 4. seeds 1-4 on the hardest puzzles
+python3 bench/run_bench.py --solvers "ours:--seed 1,ours:--seed 2,ours:--seed 3,ours:--seed 4" --timeout 3600 \
+  --jobs 2 --cpus $A,$B --out $R/hard_seeds.csv \
+  puzzles/hard/webpbn-25820.nin puzzles/survey/meow.nin puzzles/survey/faase.nin puzzles/survey/knotty.nin \
+  > $R/hard_seeds.log 2>&1
 echo FINAL_DONE > $R/final_ours.done

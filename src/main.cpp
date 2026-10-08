@@ -17,7 +17,7 @@ static void usage() {
             "  --format F     nin|cwd|non|taai (default: by extension)\n"
             "  -n N           stop after N solutions (default 2 = uniqueness check)\n"
             "  --timeout S    give up after S seconds\n"
-            "  --sat MODE     none|auto|kissat|cadical|hybrid (default auto)\n"
+            "  --sat MODE     none|hybrid|kissat|cadical (default hybrid)\n"
             "  --dfs-nodes N  DFS node budget before switching to CDCL\n"
             "  -q             do not print the solution grid\n"
             "  -v             verbose statistics\n");

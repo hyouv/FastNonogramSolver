@@ -11,9 +11,9 @@ struct Options {
     int maxSolutions = 2;
     bool maxSolutionsSet = false;
     double timeout = 1e9;
-    std::string sat = "auto";  // auto: hybrid for a single solution, kissat otherwise
+    std::string sat = "hybrid";
     long dfsNodes = 100000;
-    double dfsWork = 40e6;  // DFS budget in probes x lines before switching to CDCL
+    double dfsWork = 10e6;  // DFS budget in probes x lines before switching to CDCL
     bool verbose = false;
     std::string dimacs;
     int branchHeur = 0, valueOrder = 0;
@@ -256,7 +256,7 @@ Result solveT(const Puzzle& p, const Options& opt) {
         if (opt.verbose) fprintf(stderr, "[sat] probe clauses: %zu literals (%.3fs)\n", extra.size(), now_sec() - ti);
     }
     std::string backend = opt.sat;
-    if (backend == "auto") backend = opt.maxSolutions == 1 ? "hybrid" : "kissat";
+    if (backend == "auto") backend = "hybrid";
     SatResult sr = satSearch(p, known, found, opt.maxSolutions, deadline, opt.verbose, backend,
                              opt.probeClauses ? &extra : nullptr);
     E.solutions = found;

@@ -1,5 +1,5 @@
-// CDCL solution search: Kissat for the first solution, then a cheap
-// neighbourhood check and incremental, solution-guided CaDiCaL for more.
+// CDCL solution search: CaDiCaL (or Kissat) for the first solution, then a
+// cheap neighbourhood check, solution-guided CaDiCaL and Kissat for more.
 #include "sat.h"
 
 #include <cstdio>
